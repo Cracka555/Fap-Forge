@@ -2,7 +2,7 @@
 
 A minimalistic development utility for building Flipper Zero applications (.fap) for the [Sor3nt/Flipper-Zero-ESP32-Port](https://github.com/Sor3nt/Flipper-Zero-ESP32-Port).
 
-Eliminates the need for a full ESP-IDF/ufbt build environment — just drag your source folder onto the exe.
+Eliminates the need for a full ESP-IDF/ufbt build environment — just drag your source folder onto the executable.
 
 ## Features
 
@@ -10,23 +10,48 @@ Eliminates the need for a full ESP-IDF/ufbt build environment — just drag your
 - **Effortless Build** — Compiles .c/.cpp sources and produces a relocatable Xtensa ELF
 - **Symbol Check** — Validates all undefined symbols against firmware_api.c after linking
 - **C++ & Assets** — Native C++ support, icon processing via Pillow, auto sprite generation
+- **Cross-Platform** — Builds on Windows, Linux, and macOS
 
 ## Usage
 
 ```
-fap_builder.exe               # first-time setup
-fap_builder.exe <source_dir>  # drag & drop build
+fap_builder                # first-time setup
+fap_builder <source_dir>   # drag & drop build
+```
+
+## Downloads
+
+Pre-built binaries are available for all platforms:
+
+| Platform | Download |
+|----------|----------|
+| Windows x86_64 | `FapForge-windows-x86_64.exe` |
+| Linux x86_64 | `FapForge-linux-x86_64` |
+| macOS x86_64 | `FapForge-macos-x86_64` |
+
+## Building from Source
+
+```bash
+# Install dependencies
+pip install pyinstaller pillow
+
+# Windows
+pyinstaller --onefile --console --icon=FapForge.ico --name FapForge fap_builder.py
+
+# Linux / macOS
+pyinstaller --onefile --console --name FapForge fap_builder.py
 ```
 
 ## Project Contents
 
 | File | Description |
 |------|-------------|
-| `FapForge.exe` | Pre-built Windows executable (PyInstaller) |
 | `fap_builder.py` | Full Python source code |
-| `fap_builder.spec` | PyInstaller build spec (no icon) |
-| `fap_builder.exe.spec` | PyInstaller build spec (with icon) |
-| `fap_builder.ico` | Application icon |
+| `FapForge.ico` | Application icon |
+| `build_win.bat` | Windows build script |
+| `build_linux.sh` | Linux build script |
+| `build_macos.sh` | macOS build script |
+| `.github/workflows/release.yml` | GitHub Actions CI for releases |
 | `README.md` | This file |
 | `LICENSE` | GNU General Public License v3 |
 

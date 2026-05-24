@@ -1,0 +1,77 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pyinstaller pillow
+      - run: pyinstaller --onefile --console --icon=FapForge.ico --name FapForge fap_builder.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FapForge-windows
+          path: dist/FapForge.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller pillow
+          sudo apt-get update && sudo apt-get install -y libgl1-mesa-glx
+      - run: pyinstaller --onefile --console --name FapForge-linux fap_builder.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FapForge-linux
+          path: dist/FapForge-linux
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pyinstaller pillow
+      - run: pyinstaller --onefile --console --name FapForge-macos fap_builder.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FapForge-macos
+          path: dist/FapForge-macos
+
+  release:
+    needs: [build-windows, build-linux, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: FapForge-*
+          merge-multiple: true
+      - name: Rename and prepare release assets
+        run: |
+          mv FapForge.exe FapForge-windows-x86_64.exe
+          mv FapForge-linux FapForge-linux-x86_64
+          mv FapForge-macos FapForge-macos-x86_64
+          chmod +x FapForge-linux-x86_64 FapForge-macos-x86_64
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            FapForge-windows-x86_64.exe
+            FapForge-linux-x86_64
+            FapForge-macos-x86_64
+          generate_release_notes: true
