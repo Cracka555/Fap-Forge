@@ -27,10 +27,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install dependencies
-        run: |
-          pip install pyinstaller pillow
-          sudo apt-get update && sudo apt-get install -y libgl1-mesa-glx
+      - run: pip install pyinstaller pillow
       - run: pyinstaller --onefile --console --name FapForge-linux fap_builder.py
       - uses: actions/upload-artifact@v4
         with:
@@ -53,6 +50,7 @@ jobs:
 
   release:
     needs: [build-windows, build-linux, build-macos]
+    if: always()
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -63,15 +61,20 @@ jobs:
           merge-multiple: true
       - name: Rename and prepare release assets
         run: |
-          mv FapForge.exe FapForge-windows-x86_64.exe
-          mv FapForge-linux FapForge-linux-x86_64
-          mv FapForge-macos FapForge-macos-x86_64
-          chmod +x FapForge-linux-x86_64 FapForge-macos-x86_64
+          if [ -f FapForge.exe ]; then mv FapForge.exe FapForge-windows-x86_64.exe; fi
+          if [ -f FapForge-linux ]; then mv FapForge-linux FapForge-linux-x86_64 && chmod +x FapForge-linux-x86_64; fi
+          if [ -f FapForge-macos ]; then mv FapForge-macos FapForge-macos-x86_64 && chmod +x FapForge-macos-x86_64; fi
+      - name: Gather release files
+        id: files
+        run: |
+          files=""
+          for f in FapForge-windows-x86_64.exe FapForge-linux-x86_64 FapForge-macos-x86_64; do
+            [ -f "$f" ] && files="$files $f"
+          done
+          echo "files=$files" >> $GITHUB_OUTPUT
       - name: Create Release
+        if: steps.files.outputs.files != ''
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            FapForge-windows-x86_64.exe
-            FapForge-linux-x86_64
-            FapForge-macos-x86_64
+          files: ${{ steps.files.outputs.files }}
           generate_release_notes: true
