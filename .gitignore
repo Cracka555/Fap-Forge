@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.spec
+build_tmp/
+
+# PyInstaller artifacts
+*.toc
+*.pkg
+*.pyz
+base_library.zip
+localpycs/
+
+# Windows
+*.exe
+!FapForge.exe
+
+# OS
+.DS_Store
+Thumbs.db
