@@ -64,17 +64,16 @@ jobs:
           if [ -f FapForge.exe ]; then mv FapForge.exe FapForge-windows-x86_64.exe; fi
           if [ -f FapForge-linux ]; then mv FapForge-linux FapForge-linux-x86_64 && chmod +x FapForge-linux-x86_64; fi
           if [ -f FapForge-macos ]; then mv FapForge-macos FapForge-macos-x86_64 && chmod +x FapForge-macos-x86_64; fi
-      - name: Gather release files
-        id: files
+      - name: Upload assets to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          files=""
+          assets=()
           for f in FapForge-windows-x86_64.exe FapForge-linux-x86_64 FapForge-macos-x86_64; do
-            [ -f "$f" ] && files="$files $f"
+            [ -f "$f" ] && assets+=("$f")
           done
-          echo "files=$files" >> $GITHUB_OUTPUT
-      - name: Create Release
-        if: steps.files.outputs.files != ''
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ steps.files.outputs.files }}
-          generate_release_notes: true
+          if [ ${#assets[@]} -gt 0 ]; then
+            gh release upload v1.0.0 "${assets[@]}" --clobber
+          else
+            echo "No assets to upload"
+          fi
