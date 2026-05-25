@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-FAP Builder — standalone Windows tool to build .fap files for the
+FAP Builder — standalone cross-platform tool to build .fap files for the
 Sor3nt/Flipper-Zero-ESP32-Port project.
 
 First run auto-downloads the xtensa-esp32s3-elf toolchain + SDK headers.
-After that, drag a source folder onto fap_builder.exe to build.
+After that, drag a source folder onto the executable to build.
 
 Features:
   - Auto-downloads toolchain (~370 MB once) + SDK headers from repo
@@ -15,13 +15,15 @@ Features:
   - Verifies all undefined symbols against firmware_api.c
   - Supports .fal plugin builds (single-source, entry override)
   - Auto-discovers needed headers from app includes
+  - Cross-platform: Windows, Linux, macOS
 
 Usage:
-    fap_builder.exe               # first-time setup
-    fap_builder.exe <source_dir>  # drag & drop build
+    fap_builder                  # first-time setup
+    fap_builder --force          # re-download everything
+    fap_builder <source_dir>     # build from source directory
 """
 
-import io, json, os, re, shutil, struct, subprocess, sys, zipfile
+import io, json, os, platform, re, shutil, struct, subprocess, sys
 from pathlib import Path
 from urllib.request import urlopen, Request
 
@@ -35,11 +37,39 @@ BUILD_DIR = CACHE / "build"
 # ── Remote URLs ─────────────────────────────────────────────────────
 BASE = "https://raw.githubusercontent.com/Sor3nt/Flipper-Zero-ESP32-Port/main"
 FAP_LD_URL          = f"{BASE}/tools/fap.ld"
-FAP_MANIFEST_URL    = f"{BASE}/tools/fap_manifest.py"
-CHECK_SYMBOLS_URL   = f"{BASE}/tools/check_fap_symbols.py"
 COMPILE_ICONS_URL   = f"{BASE}/tools/fam/compile_icons.py"
 FIRMWARE_API_URL    = f"{BASE}/components/flipper_application/flipper_application/firmware_api.c"
-TOOLCHAIN_URL       = "https://github.com/espressif/crosstool-NG/releases/download/esp-14.2.0_20241119/xtensa-esp-elf-14.2.0_20241119-x86_64-w64-mingw32.zip"
+# Platform detection for toolchain
+_SYSTEM = platform.system()
+_MACHINE = platform.machine()
+
+def _toolchain_suffix():
+    if _SYSTEM == "Windows":
+        return "x86_64-w64-mingw32.zip"
+    elif _SYSTEM == "Darwin":
+        return "macos-universal.tar.gz"
+    else:
+        return "x86_64-linux-gnu.tar.xz"
+
+def _tc_extractor(zip_path, tools_dir):
+    """Extract toolchain archive based on platform."""
+    import tarfile as _tf
+    if str(zip_path).endswith(".zip"):
+        import zipfile as _zf
+        with _zf.ZipFile(zip_path) as z:
+            z.extractall(tools_dir)
+    elif str(zip_path).endswith(".tar.gz") or str(zip_path).endswith(".tgz"):
+        with _tf.open(zip_path, "r:gz") as t:
+            t.extractall(tools_dir)
+    elif str(zip_path).endswith(".tar.xz"):
+        with _tf.open(zip_path, "r:xz") as t:
+            t.extractall(tools_dir)
+    else:
+        print(f"ERROR: unknown archive format: {zip_path}")
+        sys.exit(1)
+
+TOOLCHAIN_BASE = "https://github.com/espressif/crosstool-NG/releases/download/esp-14.2.0_20241119/xtensa-esp-elf-14.2.0_20241119"
+TOOLCHAIN_URL  = f"{TOOLCHAIN_BASE}-{_toolchain_suffix()}"
 
 # ── Config ──────────────────────────────────────────────────────────
 def cfg_load():
@@ -69,42 +99,62 @@ def download(url, dest, label=""):
         data = r.read()
     dest.write_bytes(data)
 
-def human_size(b):
-    for unit in ("B","KB","MB","GB"):
-        if b < 1024: return f"{b:.0f} {unit}"
-        b /= 1024
-    return f"{b:.1f} GB"
-
 # ── Toolchain ──────────────────────────────────────────────────────
-def ensure_toolchain():
-    cc = TOOLS_DIR / "xtensa-esp-elf" / "bin" / "xtensa-esp32s3-elf-gcc.exe"
-    if cc.exists():
-        return TOOLS_DIR / "xtensa-esp-elf" / "bin"
+def _find_tc_bin_dir():
+    """Find the toolchain bin directory, checking with and without .exe extension."""
+    expected = TOOLS_DIR / "xtensa-esp-elf" / "bin"
+    for probe in ("xtensa-esp32s3-elf-gcc", "xtensa-esp32s3-elf-gcc.exe"):
+        if (expected / probe).exists():
+            return expected
+    alt = list(TOOLS_DIR.rglob("xtensa-esp32s3-elf-gcc"))
+    alt += list(TOOLS_DIR.rglob("xtensa-esp32s3-elf-gcc.exe"))
+    alt = [p.parent for p in alt]
+    if alt:
+        return alt[0]
+    return None
 
-    zip_path = CACHE / "tc.zip"
-    print("\n=== Toolchain (xtensa-esp32s3-elf, ~370 MB) ===")
-    download(TOOLCHAIN_URL, zip_path, "xtensa toolchain (~370 MB)")
+def _find_tc_binary(name):
+    """Find a toolchain binary, trying with and without .exe."""
+    tc_bin = _find_tc_bin_dir()
+    if tc_bin is None:
+        return None
+    for probe in (name, name + ".exe"):
+        p = tc_bin / probe
+        if p.exists():
+            return p
+    return None
+
+def ensure_toolchain():
+    tc_bin = _find_tc_bin_dir()
+    if tc_bin is not None:
+        return tc_bin
+
+    archive_path = CACHE / f"tc{Path(TOOLCHAIN_URL).suffix}"
+    if TOOLCHAIN_URL.endswith(".tar.gz") or TOOLCHAIN_URL.endswith(".tgz"):
+        archive_path = CACHE / "tc.tar.gz"
+    elif TOOLCHAIN_URL.endswith(".tar.xz"):
+        archive_path = CACHE / "tc.tar.xz"
+    elif TOOLCHAIN_URL.endswith(".zip"):
+        archive_path = CACHE / "tc.zip"
+
+    print(f"\n=== Toolchain (xtensa-esp32s3-elf, ~370 MB) [{_SYSTEM}] ===")
+    download(TOOLCHAIN_URL, archive_path, "xtensa toolchain")
     print("  Extracting...")
-    with zipfile.ZipFile(zip_path) as z:
-        z.extractall(TOOLS_DIR)
-    zip_path.unlink()
-    if not cc.exists():
-        alt = list(TOOLS_DIR.rglob("xtensa-esp32s3-elf-gcc.exe"))
-        if alt:
-            return alt[0].parent
-        print("ERROR: toolchain not found")
+    _tc_extractor(archive_path, TOOLS_DIR)
+    archive_path.unlink()
+
+    tc_bin = _find_tc_bin_dir()
+    if tc_bin is None:
+        print("ERROR: toolchain not found after extraction")
         sys.exit(1)
-    return TOOLS_DIR / "xtensa-esp-elf" / "bin"
+    return tc_bin
 
 def get_toolchain_bin():
-    cc = TOOLS_DIR / "xtensa-esp-elf" / "bin" / "xtensa-esp32s3-elf-gcc.exe"
-    if cc.exists():
-        return TOOLS_DIR / "xtensa-esp-elf" / "bin"
-    alt = list(TOOLS_DIR.rglob("xtensa-esp32s3-elf-gcc.exe"))
-    if alt:
-        return alt[0].parent
-    print("ERROR: toolchain not found")
-    sys.exit(1)
+    tc_bin = _find_tc_bin_dir()
+    if tc_bin is None:
+        print("ERROR: toolchain not found. Run --setup first.")
+        sys.exit(1)
+    return tc_bin
 
 # ── Header stubs ────────────────────────────────────────────────────
 STUBS = {
@@ -313,12 +363,6 @@ def write_stubs():
 # ── Header downloading ──────────────────────────────────────────────
 AUTO_STUB_COUNTER = 0
 
-# Types that need <stdint.h>
-STDINT_TYPES = {b"uint8_t", b"uint16_t", b"uint32_t", b"uint64_t",
-                b"int8_t", b"int16_t", b"int32_t", b"int64_t"}
-# Types that need <stdbool.h>
-STDBOOL_TYPES = {b"bool"}
-
 def _patch_header(text: str) -> str:
     """Ensure downloaded headers include stdint.h / stdbool.h / stddef.h.
     
@@ -364,18 +408,42 @@ def _patch_header(text: str) -> str:
 
 SKIPPED_STD_HEADERS = set()
 
-def fetch_header(rel_path):
-    """Download a single header from the repo, or create an empty stub if missing."""
+def _is_stub_file(path):
+    """Check if a cached file is an auto-generated stub."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")[:200]
+        return "auto-generated stub" in text
+    except:
+        return False
+
+def _clear_stubs():
+    """Remove all auto-generated stubs so they get re-downloaded."""
+    removed = 0
+    for p in list(REPO_DIR.rglob("*")):
+        if p.is_file() and _is_stub_file(p):
+            try:
+                p.unlink()
+                removed += 1
+            except:
+                pass
+    if removed:
+        print(f"  Cleared {removed} stubs for re-download")
+
+def fetch_header(rel_path, force=False):
+    """Download a single header from the repo, or create a stub if missing.
+    If force=True, re-download even if the file exists (unless it's a real C std header).
+    """
     global AUTO_STUB_COUNTER, SKIPPED_STD_HEADERS
     dest = REPO_DIR / rel_path
-    if dest.exists():
-        return True
     basename = os.path.basename(rel_path)
+
     if basename in STD_C_HEADERS:
         SKIPPED_STD_HEADERS.add(rel_path)
         return True
-    if rel_path in SKIPPED_STD_HEADERS:
+
+    if not force and dest.exists():
         return True
+
     dest.parent.mkdir(parents=True, exist_ok=True)
     url = f"{BASE}/{rel_path}"
     try:
@@ -384,19 +452,15 @@ def fetch_header(rel_path):
             data = r.read()
         if b"Not Found" in data[:200]:
             raise Exception("Not Found")
-        # Auto-patch missing standard includes
         patched = _patch_header(data.decode("utf-8", errors="replace"))
         dest.write_text(patched)
         return True
     except Exception:
-        # Auto-stub: create an empty header so compilation can proceed.
-        # BUT: skip if a real file with the same basename exists elsewhere
-        # under components/ (would shadow the real file via -I search order).
-        basename = os.path.basename(rel_path)
+        if rel_path in SKIPPED_STD_HEADERS:
+            return True
         same_name = list(REPO_DIR.rglob(basename))
-        same_name = [p for p in same_name if p != dest and p.stat().st_size > 50 and "auto-generated stub" not in p.read_text(encoding="utf-8", errors="replace")[:200]]
+        same_name = [p for p in same_name if p != dest and not _is_stub_file(p) and p.stat().st_size > 50]
         if same_name:
-            # A real file with this name already exists — don't shadow it
             if AUTO_STUB_COUNTER < 5:
                 print(f"    [skip] {rel_path} (shadow of {same_name[0].relative_to(REPO_DIR)})")
             AUTO_STUB_COUNTER += 1
@@ -431,19 +495,24 @@ def repair_headers():
         except:
             pass
 
-def download_headers(app_source_dir=None):
+def download_headers(app_source_dir=None, force=False):
     """Download headers from the repo, optionally seeding from app includes."""
+    if force:
+        _clear_stubs()
+
     print("\n=== Flipper-Zero-ESP32-Port SDK headers ===")
 
-    # Seed queue with core headers + any from app source
+    # Seed queue with core headers + any from app source.
+    # Only include paths known to exist in the repo; auto-stubs handle the rest.
     queue = [
         "components/furi/furi.h", "components/furi/core/base.h",
         "components/furi/core/check.h", "components/furi/core/thread.h",
         "components/furi/core/mutex.h", "components/furi/core/message_queue.h",
         "components/furi/core/timer.h", "components/furi/core/record.h",
         "components/furi/core/kernel.h", "components/furi/core/log.h",
-        "components/furi/core/memmgr.h",
-        "components/furi/core/valuemutex.h",
+        "components/furi/core/memmgr.h", "components/furi/core/pubsub.h",
+        "components/furi/core/semaphore.h", "components/furi/core/furi_string.h",
+        "components/furi/core/stream_buffer.h",
         "components/gui/gui.h", "components/gui/canvas.h",
         "components/gui/view_port.h", "components/gui/modules/widget_elements.h",
         "components/gui/elements.h", "components/gui/icon.h", "components/gui/icon_i.h",
@@ -453,7 +522,7 @@ def download_headers(app_source_dir=None):
         "components/notification/notification_messages.h",
         "components/notification/notification_messages_notes.h",
         "components/locale/locale.h",
-        "components/storage/storage.h", "components/dialogs/dialogs.h",
+        "components/storage/storage.h",
         "components/loader/loader.h",
         "components/furi_hal/furi_hal.h", "components/furi_hal/furi_hal_rtc.h",
         "components/furi_hal/furi_hal_resources.h", "components/furi_hal/furi_hal_os.h",
@@ -466,18 +535,14 @@ def download_headers(app_source_dir=None):
         "components/furi_hal/furi_hal_i2c.h", "components/furi_hal/furi_hal_sd.h",
         "components/furi_hal/furi_hal_mpu.h", "components/furi_hal/furi_hal_crypto.h",
         "components/furi_hal/furi_hal_uid.h", "components/furi_hal/furi_hal_serial.h",
+        "components/furi_hal/furi_hal_display.h", "components/furi_hal/furi_hal_speaker.h",
+        "components/furi_hal/furi_hal_nfc.h", "components/furi_hal/furi_hal_rfid.h",
+        "components/furi_hal/furi_hal_infrared.h",
         "components/flipper_application/flipper_application/firmware_api.h",
         "components/flipper_application/flipper_application/flipper_application.h",
         "components/flipper_format/flipper_format.h",
-        "components/mlib/mlib.h",
-        "components/toolbox/toolbox.h", "components/toolbox/hex.h",
-        "components/toolbox/manapool.h", "components/toolbox/path.h",
-        "components/toolbox/saved_struct.h", "components/toolbox/level_duration.h",
-        "components/toolbox/stream/stream.h", "components/toolbox/stream/file_stream.h",
-        "components/toolbox/stream/string_stream.h", "components/toolbox/name_generator.h",
-        "components/toolbox/pretty_format.h", "components/toolbox/version.h",
-        "components/toolbox/protocols/protocol_dict.h",
-        "components/bit_lib/bit_lib.h", "targets/targets.h",
+        "components/bit_lib/bit_lib.h",
+        "components/assets/assets_icons.h",
     ]
 
     # Scan app sources for #include "..." to add to download queue
@@ -486,10 +551,13 @@ def download_headers(app_source_dir=None):
             try:
                 text = src_file.read_text(encoding="utf-8", errors="replace")
                 for m in re.findall(r'#include\s+"([^"]+)"', text):
-                    # Redirect furi.h includes to canonical location
                     if os.path.basename(m) == "furi.h" and m != "components/furi/furi.h":
                         if "components/furi/furi.h" not in queue:
                             queue.append("components/furi/furi.h")
+                    elif os.path.basename(m) in ("assets_icons.h",):
+                        resolved = f"components/assets/{m}"
+                        if resolved not in queue:
+                            queue.append(resolved)
                     else:
                         queue.append(m)
                 for m in re.findall(r'#include\s+<([^>]+)>', text):
@@ -514,10 +582,10 @@ def download_headers(app_source_dir=None):
             continue
         seen.add(h)
 
-        ok = fetch_header(h)
+        ok = fetch_header(h, force=force)
         if not ok:
             if not h.startswith("components/"):
-                ok = fetch_header(f"components/{h}")
+                ok = fetch_header(f"components/{h}", force=force)
                 if ok:
                     h = f"components/{h}"
         if not ok:
@@ -525,13 +593,11 @@ def download_headers(app_source_dir=None):
 
         h_path = REPO_DIR / h
         if not h_path.exists():
-            # Not actually downloaded (e.g. standard C header handled by compiler)
             continue
         content = h_path.read_bytes().decode("utf-8", errors="replace")
         for m in re.findall(r'#include\s+"([^"]+)"', content):
             parent = h.rsplit("/", 1)[0] if "/" in h else ""
             resolved = os.path.normpath(f"{parent}/{m}").replace("\\", "/")
-            # Redirect furi.h includes to canonical location
             if os.path.basename(resolved) == "furi.h" and resolved != "components/furi/furi.h":
                 resolved = "components/furi/furi.h"
             if resolved not in seen:
@@ -544,44 +610,49 @@ def download_headers(app_source_dir=None):
                 if resolved not in seen:
                     queue.append(resolved)
                 continue
-            # Redirect furi.h includes to canonical location
             if os.path.basename(m) == "furi.h" and m != "components/furi/furi.h":
                 if "components/furi/furi.h" not in seen:
                     queue.append("components/furi/furi.h")
                 continue
-            # Try resolving relative to the parent file's directory
             parent = h.rsplit("/", 1)[0] if "/" in h else ""
             resolved_from_parent = os.path.normpath(f"{parent}/{m}").replace("\\", "/")
             if resolved_from_parent not in seen:
                 queue.append(resolved_from_parent)
-            # Also try components/{name}/{name} for simple names (handles cross-directory
-            # includes like <furi_hal.h> from locale.h -> components/furi_hal/furi_hal.h)
             if "/" not in m:
                 alt = f"components/{m.rsplit('.',1)[0]}/{m}"
                 if alt not in seen and alt != resolved_from_parent:
                     queue.append(alt)
 
 # ── Setup ───────────────────────────────────────────────────────────
-def ensure_setup():
-    if not cfg_setup_done() or not (BUILD_DIR / "firmware_api.c").exists():
+def ensure_setup(force=False):
+    if force or not cfg_setup_done() or not (BUILD_DIR / "firmware_api.c").exists():
+        if force:
+            cfg_save({"setup_done": False})
+
         ensure_toolchain()
 
-        # Download tools
+        # Download essential tools (fap.ld for linking, firmware_api.c for symbol check)
         tools_dir = REPO_DIR / "tools"
         tools_dir.mkdir(parents=True, exist_ok=True)
         for url, name in [(FAP_LD_URL, "fap.ld"),
-                          (FAP_MANIFEST_URL, "fap_manifest.py"),
-                          (CHECK_SYMBOLS_URL, "check_fap_symbols.py"),
                           (FIRMWARE_API_URL, "firmware_api.c")]:
+            if force:
+                dest = tools_dir / name
+                if dest.exists():
+                    dest.unlink()
             download(url, tools_dir / name, name)
 
         # Download icon compilation tool
         fam_tools = tools_dir / "fam"
         fam_tools.mkdir(parents=True, exist_ok=True)
+        if force:
+            d = fam_tools / "compile_icons.py"
+            if d.exists():
+                d.unlink()
         download(COMPILE_ICONS_URL, fam_tools / "compile_icons.py", "compile_icons.py")
 
         # Download SDK headers
-        download_headers()
+        download_headers(force=force)
 
         # Re-patch all cached headers to ensure standard includes
         repair_headers()
@@ -594,7 +665,6 @@ def ensure_setup():
         cfg_mark_setup()
         print("\nSetup complete!")
     else:
-        # Ensure stubs exist even if setup was done before
         write_stubs()
 
 # ── Symbol checking ─────────────────────────────────────────────────
@@ -605,8 +675,8 @@ def elf_gnu_hash(s: str) -> int:
     return h
 
 def check_undefined_symbols(tc_bin, elf_path, api_file, app_name):
-    nm = tc_bin / "xtensa-esp32s3-elf-nm.exe"
-    if not nm.exists():
+    nm = _find_tc_binary("xtensa-esp32s3-elf-nm")
+    if nm is None:
         print("  [WARN] nm not found, skipping symbol check")
         return True
 
@@ -720,14 +790,18 @@ def parse_fam(fam_path):
     return info
 
 # ── Build ───────────────────────────────────────────────────────────
-def build_fap(source_dir, output_path):
-    ensure_setup()
+def build_fap(source_dir, output_path, force=False):
+    ensure_setup(force=force)
 
     tc_bin = get_toolchain_bin()
-    cc = tc_bin / "xtensa-esp32s3-elf-gcc.exe"
-    cxx = tc_bin / "xtensa-esp32s3-elf-g++.exe"
-    ld = tc_bin / "xtensa-esp32s3-elf-ld.exe"
-    objcopy = tc_bin / "xtensa-esp32s3-elf-objcopy.exe"
+    cc = _find_tc_binary("xtensa-esp32s3-elf-gcc")
+    cxx = _find_tc_binary("xtensa-esp32s3-elf-g++")
+    ld = _find_tc_binary("xtensa-esp32s3-elf-ld")
+    objcopy = _find_tc_binary("xtensa-esp32s3-elf-objcopy")
+    for name, bin in [("gcc", cc), ("g++", cxx), ("ld", ld), ("objcopy", objcopy)]:
+        if bin is None:
+            print(f"ERROR: toolchain binary not found: xtensa-esp32s3-elf-{name}")
+            sys.exit(1)
 
     fam = source_dir / "application.fam"
     if not fam.exists():
@@ -747,10 +821,7 @@ def build_fap(source_dir, output_path):
     build.mkdir(parents=True, exist_ok=True)
 
     # Make sure app includes are downloaded
-    download_headers(source_dir)
-
-    # Re-patch all cached headers to ensure standard includes
-    repair_headers()
+    download_headers(source_dir, force=force)
 
     # Build include paths
     inc_dirs = [
@@ -929,7 +1000,12 @@ def setup_interactive():
     print("FAP Builder — First-time setup")
     ensure_setup()
     print(f"\nReady! Cache: {CACHE}")
-    print("Drag a source folder (with application.fam) onto fap_builder.exe")
+    print("Drag a source folder (with application.fam) onto the executable")
+
+def setup_force_refresh():
+    print("FAP Builder — Force re-download")
+    ensure_setup(force=True)
+    print(f"\nDone! All stubs and headers refreshed. Cache: {CACHE}")
 
 def find_source(path):
     p = Path(path)
@@ -961,13 +1037,22 @@ def main():
         setup_interactive()
         return
 
-    src = find_source(args[0])
-    if src:
-        print(f"Building: {src.name}")
-        build_fap(src, None)
-    else:
-        print("Usage: fap_builder.exe [--setup] [source_folder]")
-        print(f"Not a valid source folder: {args[0]}")
+    if args[0] == "--force":
+        setup_force_refresh()
+        return
+
+    force = "--force" in args
+    build_args = [a for a in args if not a.startswith("--")]
+
+    if build_args:
+        src = find_source(build_args[0])
+        if src:
+            print(f"Building: {src.name}")
+            build_fap(src, None, force=force)
+            return
+
+    print("Usage: fap_builder.exe [--setup|--init|--force] [source_folder]")
+    print(f"Not a valid source folder: {args[0]}")
 
 if __name__ == "__main__":
     main()

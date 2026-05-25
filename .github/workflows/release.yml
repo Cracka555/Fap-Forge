@@ -29,6 +29,7 @@ jobs:
           python-version: '3.12'
       - run: pip install pyinstaller pillow
       - run: pyinstaller --onefile --console --name FapForge-linux fap_builder.py
+      - run: chmod +x dist/FapForge-linux
       - uses: actions/upload-artifact@v4
         with:
           name: FapForge-linux
@@ -43,13 +44,31 @@ jobs:
           python-version: '3.12'
       - run: pip install pyinstaller pillow
       - run: pyinstaller --onefile --console --name FapForge-macos fap_builder.py
+      - run: chmod +x dist/FapForge-macos
       - uses: actions/upload-artifact@v4
         with:
           name: FapForge-macos
           path: dist/FapForge-macos
 
+  build-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create source distribution .tgz
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist/FapForge-$VERSION
+          cp fap_builder.py fap_builder.sh FapForge.ico LICENSE README.md dist/FapForge-$VERSION/
+          chmod +x dist/FapForge-$VERSION/fap_builder.sh
+          cd dist
+          tar czf "FapForge-$VERSION-source.tgz" "FapForge-$VERSION/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FapForge-source
+          path: dist/FapForge-*-source.tgz
+
   release:
-    needs: [build-windows, build-linux, build-macos]
+    needs: [build-windows, build-linux, build-macos, build-source]
     if: always()
     runs-on: ubuntu-latest
     permissions:
