@@ -10,13 +10,16 @@ Eliminates the need for a full ESP-IDF/ufbt build environment — just drag your
 - **Effortless Build** — Compiles .c/.cpp sources and produces a relocatable Xtensa ELF
 - **Symbol Check** — Validates all undefined symbols against firmware_api.c after linking
 - **C++ & Assets** — Native C++ support, icon processing via Pillow, auto sprite generation
-- **Cross-Platform** — Builds on Windows, Linux, and macOS
+- **Cross-Platform** — Builds on Windows, Linux, and macOS (auto-detected toolchain)
+- **Force Refresh** — `--force` flag re-downloads all headers and clears stubs
 
 ## Usage
 
 ```
-fap_builder                # first-time setup
-fap_builder <source_dir>   # drag & drop build
+fap_builder                  # first-time setup
+fap_builder --force          # re-download everything from scratch
+fap_builder <source_dir>     # drag & drop build
+fap_builder.sh <source_dir>  # Linux/macOS convenience wrapper
 ```
 
 ## Downloads
@@ -28,6 +31,7 @@ Pre-built binaries are available for all platforms:
 | Windows x86_64 | `FapForge-windows-x86_64.exe` |
 | Linux x86_64 | `FapForge-linux-x86_64` |
 | macOS x86_64 | `FapForge-macos-x86_64` |
+| Source (all platforms) | `FapForge-<version>-source.tgz` |
 
 ## Building from Source
 
@@ -47,6 +51,7 @@ pyinstaller --onefile --console --name FapForge fap_builder.py
 | File | Description |
 |------|-------------|
 | `fap_builder.py` | Full Python source code |
+| `fap_builder.sh` | Convenience wrapper for Linux/macOS |
 | `FapForge.ico` | Application icon |
 | `build_win.bat` | Windows build script |
 | `build_linux.sh` | Linux build script |
